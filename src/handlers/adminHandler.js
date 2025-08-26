@@ -1,52 +1,30 @@
 // src/handlers/adminHandler.js
-
-/**
- * Handler ini mengelola semua fungsionalitas panel admin. Ini mencakup
- * berbagai tindakan seperti mengelola pengguna, server, pengaturan,
- * dan mengirim broadcast. Karena banyak aksi admin memerlukan input
- * multi-langkah, handler ini sangat bergantung pada objek `pendingAdminAction`
- * untuk melacak status percakapan dengan admin.
- */
-
-// Impor service dan utilitas yang diperlukan.
 const userService = require('../services/userService');
 const serverService = require('../services/serverService');
-const sqliteService = require('../services/sqliteService'); // Untuk melihat transaksi.
+const sqliteService = require('../services/sqliteService');
 const { writeLog } = require('../utils/logger');
-const { prettyLine, backButton, escapeMarkdown, formatRupiah } = require('../utils/helpers');
+const { prettyLine, backButton, formatRupiah } = require('../utils/helpers');
 
-// Objek global untuk melacak aksi admin yang sedang menunggu input.
-// Kunci adalah userId admin, nilainya adalah objek status.
 const pendingAdminAction = {};
 
-// Daftar konstanta protokol untuk mempermudah penambahan server.
 const VPN_PROTOCOLS = [
     { id: 'ssh', name: 'SSH' },
     { id: 'vmess', name: 'VMess' },
     { id: 'vless', name: 'VLess' },
     { id: 'trojan', name: 'Trojan' },
+    { id: 'ss', name: 'ShadowSocks' },
+    { id: 's5', name: 'Socks5' },
     { id: 'noobzvpn', name: 'NoobzVPN' },
 ];
 
-/**
- * Memeriksa apakah pengguna adalah admin.
- * @param {string} userId ID pengguna.
- * @returns {boolean} `true` jika admin, `false` jika bukan.
- */
 function isAdmin(userId) {
   const user = userService.getUser(userId);
   return user && user.role === 'admin';
 }
 
-/**
- * Menampilkan menu utama panel admin.
- * @param {object} bot Instance bot.
- * @param {object} query Objek query atau pesan dari Telegram.
- */
 async function handleAdminPanelMain(bot, query) {
   const userId = query.from.id.toString();
-  if (!isAdmin(userId)) return; // Validasi akses admin.
-
+  if (!isAdmin(userId)) return;
   const text = `👑 *Panel Admin Utama*\n${prettyLine()}\nPilih tindakan yang ingin Anda lakukan:`;
   const keyboard = [
     [{ text: '👤 Kelola Pengguna', callback_data: 'admin_manage_users' }],
@@ -55,7 +33,6 @@ async function handleAdminPanelMain(bot, query) {
     [{ text: '📜 Lihat Transaksi', callback_data: 'admin_view_transactions' }],
     [backButton('⬅️ Kembali ke Menu', 'back_menu')]
   ];
-
   await bot.editMessageText(text, {
     chat_id: query.message.chat.id,
     message_id: query.message.message_id,
@@ -64,33 +41,89 @@ async function handleAdminPanelMain(bot, query) {
   });
 }
 
-// --- MANAJEMEN PENGGUNA ---
-
-/**
- * Menampilkan menu untuk manajemen pengguna.
- */
 async function handleManageUsers(bot, query) {
     if (!isAdmin(query.from.id.toString())) return;
     const text = `*👤 Kelola Pengguna*\n${prettyLine()}\nPilih aksi yang ingin Anda lakukan.`;
     const keyboard = [
-        [{ text: '➕ Tambah Saldo Manual', callback_data: 'admin_add_balance_prompt' }],
+        [{ text: '➕ Tambah Saldo', callback_data: 'admin_add_balance_prompt' }],
+        [{ text: '➖ Kurangi Saldo', callback_data: 'admin_reduce_balance_prompt' }],
+        [{ text: '✏️ Set Saldo', callback_data: 'admin_set_balance_prompt' }],
         [{ text: '👑 Ubah Peran Pengguna', callback_data: 'admin_set_role_prompt' }],
         [backButton('⬅️ Kembali', 'admin_panel_main')]
     ];
     await bot.editMessageText(text, { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
 }
 
-/**
- * Memulai alur penambahan saldo manual.
- */
-async function handleAddBalancePrompt(bot, query) {
+async function handleBalanceActionPrompt(bot, query, mode) {
     const adminId = query.from.id.toString();
     if (!isAdmin(adminId)) return;
-    pendingAdminAction[adminId] = { action: 'add_balance_input', step: 'userid', messageId: query.message.message_id, chatId: query.message.chat.id };
-    await bot.editMessageText('💰 *Tambah Saldo Manual*\n\nKirimkan *User ID* dari pengguna yang saldonya ingin Anda tambah.', {
+    let title = '';
+    if (mode === 'add') title = '💰 Tambah Saldo Manual';
+    if (mode === 'reduce') title = '➖ Kurangi Saldo Manual';
+    if (mode === 'set') title = '✏️ Set Saldo Manual';
+    pendingAdminAction[adminId] = {
+        action: 'balance_input',
+        mode: mode,
+        step: 'userid',
+        messageId: query.message.message_id,
+        chatId: query.message.chat.id
+    };
+    await bot.editMessageText(`${title}\n\nKirimkan *User ID* dari pengguna yang saldonya ingin Anda ubah.`, {
         chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: [[backButton('Batal', 'admin_manage_users')]] }
     });
+}
+
+async function handleBalanceInput(bot, msg) {
+    const adminId = msg.from.id.toString();
+    const state = pendingAdminAction[adminId];
+    if (!state || state.action !== 'balance_input') return;
+
+    const input = msg.text.trim();
+    const { chatId, messageId, step, mode } = state;
+    await bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+
+    if (step === 'userid') {
+        const user = userService.getUser(input);
+        if (!user) {
+            await bot.sendMessage(chatId, 'User ID tidak ditemukan. Silakan coba lagi.');
+            return;
+        }
+        state.targetUserId = input;
+        state.step = 'amount';
+        await bot.editMessageText(`User ditemukan: @${user.username}\nSaldo saat ini: ${formatRupiah(user.balance)}\n\nKirimkan *jumlah nominal* (angka saja).`, {
+            chatId, messageId, parse_mode: 'Markdown'
+        });
+    } else if (step === 'amount') {
+        const amount = parseInt(input);
+        if (isNaN(amount) || amount < 0) {
+            await bot.sendMessage(chatId, 'Jumlah tidak valid. Masukkan angka positif saja.');
+            return;
+        }
+
+        const { targetUserId } = state;
+        let actionText = '';
+
+        if (mode === 'add') {
+            actionText = 'ditambahkan';
+            userService.updateUserBalance(targetUserId, amount, 'manual_admin_add');
+        } else if (mode === 'reduce') {
+            actionText = 'dikurangi';
+            userService.updateUserBalance(targetUserId, -amount, 'manual_admin_reduce');
+        } else if (mode === 'set') {
+            const user = userService.getUser(targetUserId);
+            const finalAmount = amount - user.balance;
+            actionText = `diatur menjadi ${formatRupiah(amount)}`;
+            userService.updateUserBalance(targetUserId, finalAmount, 'manual_admin_set');
+        }
+
+        const updatedUser = userService.getUser(targetUserId);
+        delete pendingAdminAction[adminId];
+        await bot.editMessageText(`✅ *Sukses!*\n\nSaldo untuk User ID \`${targetUserId}\` telah ${actionText}.\n\nSaldo baru: *${formatRupiah(updatedUser.balance)}*`, {
+            chatId, messageId, parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[backButton('Kembali', 'admin_manage_users')]] }
+        });
+    }
 }
 
 // --- FUNGSI MANAJEMEN SERVER (CRUD LENGKAP) ---
@@ -509,7 +542,8 @@ module.exports = {
   isAdmin,
   handleAdminPanelMain,
   handleManageUsers,
-  handleAddBalancePrompt,
+  handleBalanceActionPrompt,
+  handleBalanceInput,
   handleManageServersMenu,
   handleSelectServer,
   handleAddServerPrompt,
