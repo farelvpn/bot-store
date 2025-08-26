@@ -42,6 +42,13 @@ module.exports = {
     port: process.env.WEBHOOK_PORT || 3000,
   },
 
+  // Konfigurasi notifikasi grup (BARU)
+  groupNotification: {
+    enabled: process.env.GROUP_NOTIFICATION_ENABLED === 'true',
+    chatId: process.env.GROUP_NOTIFICATION_CHAT_ID,
+    topicId: process.env.GROUP_NOTIFICATION_TOPIC_ID || null, // Jadi null jika kosong
+  },
+
   // Kumpulan path file dan direktori penting yang digunakan oleh bot.
   paths: {
     // Path ke file database utama (JSON).
