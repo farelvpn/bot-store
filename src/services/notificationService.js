@@ -1,59 +1,108 @@
 // src/services/notificationService.js
 
 /**
- * Service ini bertanggung jawab untuk memformat dan mengirim pesan notifikasi
- * kepada pengguna atau admin. Memusatkan logika notifikasi di sini
- * membuat pesan menjadi konsisten dan mudah diubah di satu tempat.
+ * Service ini bertanggung jawab untuk memformat dan mengirim notifikasi
+ * ke pengguna atau grup admin.
  */
 
 const config = require('../config');
-const { formatRupiah, escapeMarkdown } = require('../utils/helpers');
+const { formatRupiah, censorUsername, censorBalance } = require('../utils/helpers');
 const { writeLog } = require('../utils/logger');
 
 /**
- * Mengirim notifikasi ke pengguna bahwa topup mereka berhasil.
+ * Mengirim notifikasi ke grup yang telah dikonfigurasi.
  * @param {object} bot Instance bot Telegram.
- * @param {string} userId ID pengguna yang akan dikirimi notifikasi.
- * @param {number} amount Jumlah topup.
- * @param {number} newBalance Saldo baru pengguna setelah topup.
+ * @param {string} message Pesan yang akan dikirim.
  */
-async function sendTopupSuccessNotification(bot, userId, amount, newBalance) {
+async function sendNotificationToGroup(bot, message) {
+  // Cek apakah notifikasi diaktifkan dan ID grup ada
+  if (!config.groupNotification.enabled || !config.groupNotification.chatId) {
+    return;
+  }
+
   try {
-    const message = `✅ *Topup Berhasil!*\n\n` +
-                    `Sejumlah *${formatRupiah(amount)}* telah berhasil ditambahkan ke saldo Anda.\n\n` +
-                    `Saldo Anda sekarang: *${formatRupiah(newBalance)}*`;
-    
-    // Mengirim pesan ke pengguna.
-    await bot.sendMessage(userId, message, { parse_mode: 'Markdown' });
+    const options = {
+      parse_mode: 'HTML', // Menggunakan HTML untuk fleksibilitas format
+      message_thread_id: config.groupNotification.topicId, // ID Topik/Thread
+    };
+    await bot.sendMessage(config.groupNotification.chatId, message, options);
   } catch (error) {
-    // Menangani error jika bot diblokir oleh pengguna, dll.
-    writeLog(`[Notification] Gagal mengirim notifikasi topup ke User ID ${userId}: ${error.message}`);
+    writeLog(`[Notification] Gagal mengirim notifikasi ke grup ${config.groupNotification.chatId}: ${error.message}`);
   }
 }
 
 /**
- * Mengirim notifikasi ke admin bahwa ada topup baru yang masuk.
- * @param {object} bot Instance bot Telegram.
- * @param {string} userId ID pengguna yang melakukan topup.
+ * Notifikasi untuk topup yang berhasil.
+ * @param {object} bot Instance bot.
+ * @param {string} userId ID pengguna.
  * @param {string} username Username pengguna.
  * @param {number} amount Jumlah topup.
  */
-async function sendAdminTopupNotification(bot, userId, username, amount) {
-  try {
-    const message = `🔔 *Notifikasi Topup Baru*\n\n` +
-                    `Pengguna baru saja melakukan topup:\n` +
-                    `👤 **Username:** @${escapeMarkdown(username || 'tidak_ada')}\n` +
-                    `🆔 **ID:** \`${userId}\`\n` +
-                    `💰 **Jumlah:** *${formatRupiah(amount)}*`;
+async function sendTopupSuccessNotification(bot, userId, username, amount) {
+  const censoredUser = censorUsername(username || `user${userId}`);
+  const censoredAmount = censorBalance(amount);
 
-    // Mengirim pesan ke admin utama yang diatur di .env.
-    await bot.sendMessage(config.adminId, message, { parse_mode: 'Markdown' });
-  } catch (error) {
-    writeLog(`[Notification] Gagal mengirim notifikasi topup ke Admin: ${error.message}`);
-  }
+  const message = `
+✅ <b>Topup Saldo Berhasil</b>
+------------------------------------------
+👤 <b>User:</b> ${censoredUser} (<code>${userId}</code>)
+💰 <b>Jumlah:</b> ${censoredAmount}
+------------------------------------------
+  `;
+  await sendNotificationToGroup(bot, message);
 }
+
+/**
+ * Notifikasi untuk pembelian akun VPN baru.
+ * @param {object} bot
+ * @param {object} user - Objek pengguna dari Telegram (msg.from).
+ * @param {object} purchaseData - Detail pembelian.
+ */
+async function sendNewVpnPurchaseNotification(bot, user, purchaseData) {
+    const { serverName, protocol, username, price } = purchaseData;
+    const censoredUser = censorUsername(user.username || `user${user.id}`);
+    const censoredPrice = censorBalance(price);
+
+    const message = `
+🛒 <b>Pembelian Akun Baru</b>
+------------------------------------------
+👤 <b>Pembeli:</b> ${censoredUser} (<code>${user.id}</code>)
+🗄️ <b>Server:</b> ${serverName}
+🛡️ <b>Protokol:</b> ${protocol.toUpperCase()}
+🤵 <b>Username:</b> <code>${username}</code>
+💸 <b>Harga:</b> ${censoredPrice}
+------------------------------------------
+    `;
+    await sendNotificationToGroup(bot, message);
+}
+
+/**
+ * Notifikasi untuk perpanjangan akun VPN.
+ * @param {object} bot
+ * @param {object} user - Objek pengguna dari Telegram (msg.from).
+ * @param {object} renewData - Detail perpanjangan.
+ */
+async function sendVpnRenewNotification(bot, user, renewData) {
+    const { serverName, protocol, username, price } = renewData;
+    const censoredUser = censorUsername(user.username || `user${user.id}`);
+    const censoredPrice = censorBalance(price);
+
+    const message = `
+🔄 <b>Perpanjangan Akun</b>
+------------------------------------------
+👤 <b>Pelanggan:</b> ${censoredUser} (<code>${user.id}</code>)
+🗄️ <b>Server:</b> ${serverName}
+🛡️ <b>Protokol:</b> ${protocol.toUpperCase()}
+🤵 <b>Username:</b> <code>${username}</code>
+💸 <b>Biaya:</b> ${censoredPrice}
+------------------------------------------
+    `;
+    await sendNotificationToGroup(bot, message);
+}
+
 
 module.exports = {
   sendTopupSuccessNotification,
-  sendAdminTopupNotification,
+  sendNewVpnPurchaseNotification,
+  sendVpnRenewNotification
 };
