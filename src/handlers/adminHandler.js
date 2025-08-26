@@ -95,23 +95,234 @@ async function handleAddBalancePrompt(bot, query) {
 
 // --- FUNGSI MANAJEMEN SERVER (CRUD LENGKAP) ---
 
+/**
+ * Menampilkan menu manajemen server (Tambah, Edit, Hapus).
+ * @param {object} bot Instance bot.
+ * @param {object} query Objek query dari Telegram.
+ */
 async function handleManageServersMenu(bot, query) {
-    /* ... (sudah ada di respons sebelumnya) ... */
+    if (!isAdmin(query.from.id.toString())) return;
+    const text = `*🗄️ Kelola Server VPN*\n${prettyLine()}\nPilih aksi yang ingin Anda lakukan.`;
+    const keyboard = [
+        [{ text: '➕ Tambah Server Baru', callback_data: 'admin_add_server_prompt' }],
+        [{ text: '✏️ Edit Server', callback_data: 'admin_edit_server_select' }],
+        [{ text: '🗑️ Hapus Server', callback_data: 'admin_delete_server_select' }],
+        [backButton('⬅️ Kembali', 'admin_panel_main')]
+    ];
+    await bot.editMessageText(text, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
 }
+
+/**
+ * Menampilkan daftar server untuk dipilih (untuk diedit atau dihapus).
+ * @param {object} bot Instance bot.
+ * @param {object} query Objek query dari Telegram.
+ * @param {string} action Aksi yang akan dilakukan ('edit' atau 'delete').
+ */
 async function handleSelectServer(bot, query, action) {
-    /* ... (sudah ada di respons sebelumnya) ... */
+    if (!isAdmin(query.from.id.toString())) return;
+    const allServers = serverService.getAllAvailableServers();
+    if (allServers.length === 0) {
+        await bot.answerCallbackQuery(query.id, { text: 'Tidak ada server yang tersedia.', show_alert: true });
+        return;
+    }
+
+    const title = action === 'edit' ? '✏️ Edit Server' : '🗑️ Hapus Server';
+    const callbackPrefix = action === 'edit' ? 'admin_edit_server_details_' : 'admin_delete_server_confirm_';
+
+    const keyboard = allServers.map(server => ([{
+        text: server.name,
+        callback_data: `${callbackPrefix}${server.id}`
+    }]));
+    keyboard.push([backButton('⬅️ Kembali', 'admin_manage_servers')]);
+
+    await bot.editMessageText(`*${title}*\n${prettyLine()}\nPilih server yang ingin Anda ${action}.`, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
 }
+
+/**
+ * Menampilkan detail server yang dipilih dan tombol untuk mengedit setiap properti.
+ * @param {object} bot Instance bot.
+ * @param {object} query Objek query dari Telegram.
+ */
 async function handleEditServerDetails(bot, query) {
-    /* ... (sudah ada di respons sebelumnya) ... */
+    if (!isAdmin(query.from.id.toString())) return;
+    const serverId = query.data.split('_').pop();
+    const server = serverService.getServerDetails(serverId);
+    if (!server) {
+        await bot.answerCallbackQuery(query.id, { text: 'Server tidak ditemukan.', show_alert: true });
+        return;
+    }
+
+    let text = `*✏️ Edit Server: ${escapeMarkdown(server.name)}*\n${prettyLine()}\n`;
+    text += `*ID Server:* \`${serverId}\`\n`;
+    text += `*Nama:* ${escapeMarkdown(server.name)}\n`;
+    text += `*Domain:* ${escapeMarkdown(server.domain)}\n`;
+    text += `*API Token:* \`${escapeMarkdown(server.api_token)}\`\n\n`;
+    text += `*Harga Protokol:*\n`;
+    VPN_PROTOCOLS.forEach(proto => {
+        const price = server.protocols[proto.id]?.price_per_30_days || 0;
+        text += `• ${proto.name}: ${formatRupiah(price)}\n`;
+    });
+    text += `${prettyLine()}\nPilih properti yang ingin diubah:`;
+
+    const keyboard = [
+        [{ text: 'Ubah Nama', callback_data: `admin_edit_prop_name_${serverId}` }],
+        [{ text: 'Ubah Domain', callback_data: `admin_edit_prop_domain_${serverId}` }],
+        [{ text: 'Ubah API Token', callback_data: `admin_edit_prop_api_token_${serverId}` }],
+        // Tombol untuk setiap harga protokol
+        ...VPN_PROTOCOLS.map(p => ([{
+            text: `Ubah Harga ${p.name}`,
+            callback_data: `admin_edit_prop_price_${p.id}_${serverId}`
+        }])),
+        [backButton('⬅️ Kembali', 'admin_edit_server_select')]
+    ];
+
+    await bot.editMessageText(text, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+    });
 }
+
+/**
+ * Meminta admin untuk mengirimkan nilai baru untuk properti server yang dipilih.
+ * @param {object} bot Instance bot.
+ * @param {object} query Objek query dari Telegram.
+ */
 async function handleEditServerPropPrompt(bot, query) {
-    /* ... (sudah ada di respons sebelumnya) ... */
+    const adminId = query.from.id.toString();
+    if (!isAdmin(adminId)) return;
+
+    const parts = query.data.split('_');
+    const property = parts[3]; // e.g., 'name', 'domain', 'price'
+    const serverId = parts.pop();
+    const protoId = property === 'price' ? parts[4] : null;
+
+    let promptText = `✏️ *Mengubah Properti Server*\n\n`;
+    if (property === 'price') {
+        promptText += `Masukkan harga baru untuk protokol *${protoId.toUpperCase()}* di server \`${serverId}\`. (angka saja, misal: 15000)`;
+    } else {
+        promptText += `Masukkan nilai baru untuk *${property}* server \`${serverId}\`.`;
+    }
+
+    pendingAdminAction[adminId] = {
+        action: 'edit_server_input',
+        serverId,
+        property,
+        protoId,
+        messageId: query.message.message_id,
+        chatId: query.message.chat.id
+    };
+
+    await bot.editMessageText(promptText, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: [[backButton('Batal', `admin_edit_server_details_${serverId}`)]] }
+    });
 }
+
+/**
+ * Memproses input teks dari admin untuk mengubah properti server.
+ * @param {object} bot Instance bot.
+ * @param {object} msg Objek pesan dari Telegram.
+ */
 async function handleEditServerInput(bot, msg) {
-    /* ... (sudah ada di respons sebelumnya) ... */
+    const adminId = msg.from.id.toString();
+    const state = pendingAdminAction[adminId];
+    if (!state || state.action !== 'edit_server_input') return;
+
+    const { serverId, property, protoId, chatId, messageId } = state;
+    const server = serverService.getServerDetails(serverId);
+    if (!server) {
+        delete pendingAdminAction[adminId];
+        await bot.editMessageText('Server tidak ditemukan. Proses dibatalkan.', { chatId, messageId });
+        return;
+    }
+
+    const input = msg.text.trim();
+    await bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+
+    if (property === 'price') {
+        const price = parseInt(input);
+        if (isNaN(price) || price < 0) {
+            await bot.answerCallbackQuery(msg.message_id, { text: 'Harga tidak valid. Masukkan angka saja.', show_alert: true });
+            return;
+        }
+        if (price === 0) {
+            delete server.protocols[protoId]; // Hapus jika harga 0
+        } else {
+            // Pastikan objek protokol ada sebelum menetapkan harga
+            if (!server.protocols[protoId]) {
+                server.protocols[protoId] = {};
+            }
+            server.protocols[protoId].price_per_30_days = price;
+        }
+    } else {
+        server[property] = input; // Mengubah properti lain (name, domain, api_token)
+    }
+
+    serverService.saveServerDetails(serverId, server);
+    delete pendingAdminAction[adminId];
+    await bot.answerCallbackQuery(msg.message_id, { text: 'Perubahan berhasil disimpan!', show_alert: true });
+
+    // Refresh halaman detail server
+    const fakeQuery = {
+        from: msg.from,
+        message: { chat: { id: chatId }, message_id: messageId },
+        data: `admin_edit_server_details_${serverId}`
+    };
+    await handleEditServerDetails(bot, fakeQuery);
 }
+
+/**
+ * Menampilkan konfirmasi sebelum menghapus server.
+ * @param {object} bot Instance bot.
+ * @param {object} query Objek query dari Telegram.
+ */
 async function handleDeleteServerConfirm(bot, query) {
-    /* ... (sudah ada di respons sebelumnya) ... */
+    if (!isAdmin(query.from.id.toString())) return;
+    const serverId = query.data.split('_').pop();
+    const server = serverService.getServerDetails(serverId);
+
+    if (!server) {
+        await bot.answerCallbackQuery(query.id, { text: 'Server tidak ditemukan.', show_alert: true });
+        return;
+    }
+    
+    // Cek jika ada bagian data callback yang menandakan penghapusan final
+    if (query.data.includes('_dodelete_')) {
+        serverService.deleteServer(serverId);
+        await bot.editMessageText(`✅ *Server Dihapus!*\n\nServer *${escapeMarkdown(server.name)}* (\`${serverId}\`) telah berhasil dihapus.`, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[backButton('Kembali', 'admin_manage_servers')]] }
+        });
+    } else {
+        // Tampilkan konfirmasi pertama kali
+        const text = `*🗑️ Konfirmasi Hapus Server*\n\nAnda yakin ingin menghapus server *${escapeMarkdown(server.name)}* (\`${serverId}\`)?\n\nTindakan ini tidak dapat diurungkan.`;
+        const keyboard = [
+            [{ text: '❌ TIDAK, Batalkan', callback_data: 'admin_delete_server_select' }],
+            [{ text: '✅ YA, HAPUS SEKARANG', callback_data: `admin_delete_server_confirm__dodelete_${serverId}` }]
+        ];
+        await bot.editMessageText(text, {
+            chat_id: query.message.chat.id,
+            message_id: query.message.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
 }
 
 
@@ -142,7 +353,7 @@ async function handleAddServerPrompt(bot, query) {
 async function handleAddServerInput(bot, msg) {
     const adminId = msg.from.id.toString();
     const state = pendingAdminAction[adminId];
-    if (!state || !state.action !== 'add_server_input') return;
+    if (!state || state.action !== 'add_server_input') return;
 
     const input = msg.text.trim();
     const { chatId, messageId } = state;
@@ -153,7 +364,7 @@ async function handleAddServerInput(bot, msg) {
             case 'id':
                 // Validasi ID server.
                 if (!/^[a-z0-9-]+$/.test(input) || serverService.getServerDetails(input)) {
-                    await bot.answerCallbackQuery(msg.message_id, { text: 'ID tidak valid atau sudah digunakan. Coba lagi.', show_alert: true });
+                     await bot.sendMessage(chatId, 'ID tidak valid atau sudah digunakan. Coba lagi.');
                     return; // Tetap di langkah ini.
                 }
                 state.serverData.id = input;
@@ -186,7 +397,7 @@ async function handleAddServerInput(bot, msg) {
             case 'price':
                 const price = parseInt(input);
                 if (isNaN(price) || price < 0) {
-                     await bot.answerCallbackQuery(msg.message_id, { text: 'Harga tidak valid. Masukkan angka saja.', show_alert: true });
+                     await bot.sendMessage(chatId, 'Harga tidak valid. Masukkan angka saja.');
                     return; // Tetap di langkah ini.
                 }
                 
