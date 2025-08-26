@@ -1,3 +1,5 @@
+// src/utils/helpers.js
+
 /**
  * Kumpulan fungsi utilitas umum.
  */
@@ -32,13 +34,26 @@ module.exports = {
   prettyLine: () => '------------------------------------------',
 
   /**
-   * "Membersihkan" string agar aman digunakan dalam mode MarkdownV2 Telegram.
-   * Karakter khusus akan di-escape.
-   * @param {string} str String yang akan di-escape.
-   * @returns {string} String yang aman untuk MarkdownV2.
+   * Menyensor username untuk notifikasi.
+   * @param {string} username Username yang akan disensor.
+   * @returns {string} Username tersensor (e.g., "us***me").
    */
-  escapeMarkdown: (str) => {
-    if (typeof str !== 'string') return '';
-    return str.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
+  censorUsername: (username) => {
+    if (!username || username.length < 3) return '***';
+    const start = username.slice(0, 2);
+    const end = username.slice(-1);
+    const censored = '*'.repeat(Math.max(3, username.length - 3));
+    return `${start}${censored}${end}`;
   },
+
+  /**
+   * Menyensor nominal saldo/harga untuk notifikasi.
+   * @param {number} amount Nominal yang akan disensor.
+   * @returns {string} Nominal tersensor dalam format Rupiah (e.g., "Rp 5* ***").
+   */
+  censorBalance: (amount) => {
+      const formatted = module.exports.formatRupiah(amount);
+      // Mengganti semua digit kecuali yg pertama dengan '*'
+      return formatted.replace(/\d/g, (match, offset) => (offset < 4 ? match : '*'));
+  }
 };
